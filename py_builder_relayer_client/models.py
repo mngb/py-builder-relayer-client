@@ -19,6 +19,7 @@ class SafeTransaction:
 class TransactionType(Enum):
     SAFE = "SAFE"
     SAFE_CREATE = "SAFE-CREATE"
+    PROXY = "PROXY"
 
 
 @dataclass
@@ -35,6 +36,12 @@ class SignatureParams:
     payment_token: str = None
     payment: str = None
     payment_receiver: str = None
+
+    # PROXY signature params
+    relayer_fee: str = None
+    gas_limit: str = None
+    relay_hub: str = None
+    relay: str = None
 
     def to_dict(self):
         d = {}
@@ -56,6 +63,14 @@ class SignatureParams:
             d["payment"] = self.payment
         if self.payment_receiver is not None:
             d["paymentReceiver"] = self.payment_receiver
+        if self.relayer_fee is not None:
+            d["relayerFee"] = self.relayer_fee
+        if self.gas_limit is not None:
+            d["gasLimit"] = self.gas_limit
+        if self.relay_hub is not None:
+            d["relayHub"] = self.relay_hub
+        if self.relay is not None:
+            d["relay"] = self.relay
         return d
 
 
@@ -123,3 +138,39 @@ class SplitSig:
     r: str
     s: str
     v: str
+
+
+class CallType(Enum):
+    Invalid = "0"
+    Call = "1"
+    DelegateCall = "2"
+
+
+class RelayerTxType(Enum):
+    SAFE = "SAFE"
+    PROXY = "PROXY"
+
+
+@dataclass
+class Transaction:
+    to: str
+    data: str
+    value: str
+
+
+@dataclass
+class ProxyTransaction:
+    to: str
+    type_code: CallType
+    data: str
+    value: str
+
+
+@dataclass
+class ProxyTransactionArgs:
+    from_address: str
+    nonce: str
+    gas_price: str
+    data: str
+    relay: str
+    gas_limit: str = None

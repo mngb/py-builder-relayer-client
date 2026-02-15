@@ -1,7 +1,8 @@
 from eth_abi import encode
+from eth_abi.packed import encode_packed
 from eth_utils import to_bytes, to_checksum_address, keccak
 
-from ..constants.constants import SAFE_INIT_CODE_HASH
+from ..constants.constants import SAFE_INIT_CODE_HASH, PROXY_INIT_CODE_HASH
 
 
 def get_create2_address(bytecode_hash: str, from_address: str, salt: bytes) -> str:
@@ -33,3 +34,14 @@ def derive(address: str, safe_factory: str) -> str:
         bytecode_hash=SAFE_INIT_CODE_HASH, from_address=safe_factory, salt=salt
     )
     return to_checksum_address(safe_address)
+
+
+def derive_proxy_wallet(address: str, proxy_factory: str) -> str:
+    address = to_checksum_address(address)
+    proxy_factory = to_checksum_address(proxy_factory)
+
+    salt = keccak(encode_packed(["address"], [address]))
+    proxy_address = get_create2_address(
+        bytecode_hash=PROXY_INIT_CODE_HASH, from_address=proxy_factory, salt=salt
+    )
+    return to_checksum_address(proxy_address)

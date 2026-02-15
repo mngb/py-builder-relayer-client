@@ -1,21 +1,32 @@
 import logging
 import time
 
+import requests
+
 from py_builder_signing_sdk.config import BuilderConfig
 from typing import List, Optional
 
 from .signer import Signer
-from .config import get_contract_config
+from .config import get_contract_config, is_proxy_config_valid, is_safe_config_valid
 from .constants.constants import ZERO_ADDRESS
+from .gas import estimate_gas, DEFAULT_GAS_LIMIT
 from .http_helpers.helpers import get, post, POST
-from .builder.derive import derive
+from .builder.derive import derive, derive_proxy_wallet
 from .builder.safe import build_safe_transaction_request
+from .builder.proxy import build_proxy_transaction_request
 from .builder.create import build_safe_create_transaction_request
+from .encode.proxy import encode_proxy_transaction_data
 from .models import (
     SafeTransaction,
     SafeTransactionArgs,
     SafeCreateTransactionArgs,
     TransactionType,
+    Transaction,
+    RelayerTxType,
+    OperationType,
+    CallType,
+    ProxyTransaction,
+    ProxyTransactionArgs,
 )
 from .exceptions import RelayerClientException
 from .endpoints import (
@@ -24,6 +35,7 @@ from .endpoints import (
     GET_TRANSACTION,
     GET_TRANSACTIONS,
     SUBMIT_TRANSACTION,
+    GET_RELAY_PAYLOAD,
 )
 from .response import ClientRelayerTransactionResponse
 
@@ -40,12 +52,15 @@ class RelayClient:
         chain_id: int,
         private_key: str = None,
         builder_config: BuilderConfig = None,
+        relay_tx_type=None,
+        rpc_url: str = None,
     ):
         self.relayer_url = (
             relayer_url[0:-1] if relayer_url.endswith("/") else relayer_url
         )
         self.chain_id = chain_id
         self.contract_config = get_contract_config(chain_id)
+        self.rpc_url = rpc_url
 
         self.signer = None
         if private_key is not None:
@@ -56,12 +71,22 @@ class RelayClient:
             self.builder_config = builder_config
         self.logger = logging.getLogger(self.__class__.__name__)
 
+        self.relay_tx_type = relay_tx_type if relay_tx_type is not None else RelayerTxType.SAFE
+
     def get_nonce(self, signer_address: str, signer_type: str):
         """
         Gets the nonce for the signer
         """
         return get(
             f"{self.relayer_url}{GET_NONCE}?address={signer_address}&type={signer_type}"
+        )
+
+    def get_relay_payload(self, signer_address: str, signer_type: str):
+        """
+        Gets the relay payload for the signer
+        """
+        return get(
+            f"{self.relayer_url}{GET_RELAY_PAYLOAD}?address={signer_address}&type={signer_type}"
         )
 
     def get_transaction(self, transaction_id: str):
@@ -87,9 +112,47 @@ class RelayClient:
             return bool(deployed_payload.get("deployed"))
         return False
 
-    def execute(self, transactions: list[SafeTransaction], metadata: str = None):
+    def execute(self, transactions: list[Transaction], metadata: str = None):
         self.assert_signer_needed()
         self.assert_builder_creds_needed()
+        if len(transactions) == 0:
+            raise RelayerClientException("no transactions to execute")
+
+        if self.relay_tx_type == RelayerTxType.SAFE:
+            safe_txns = [
+                SafeTransaction(
+                    to=t.to,
+                    operation=OperationType.Call,
+                    data=t.data,
+                    value="0",
+                )
+                for t in transactions
+            ]
+            return self._execute_safe_transactions(safe_txns, metadata)
+        elif self.relay_tx_type == RelayerTxType.PROXY:
+            proxy_txns = [
+                ProxyTransaction(
+                    to=t.to,
+                    type_code=CallType.Call,
+                    data=t.data,
+                    value="0",
+                )
+                for t in transactions
+            ]
+            return self._execute_proxy_transactions(proxy_txns, metadata)
+        else:
+            raise RelayerClientException(
+                f"Unsupported relay transaction type: {self.relay_tx_type}"
+            )
+
+    def _execute_safe_transactions(
+        self, transactions: list[SafeTransaction], metadata: str = None
+    ):
+        if not is_safe_config_valid(self.contract_config):
+            raise RelayerClientException(
+                "Safe contracts are not configured for this chain"
+            )
+
         safe_address = self.get_expected_safe()
 
         deployed = self.get_deployed(safe_address)
@@ -116,6 +179,50 @@ class RelayClient:
         txn_request = build_safe_transaction_request(
             signer=self.signer,
             args=safe_args,
+            config=self.contract_config,
+            metadata=metadata,
+        ).to_dict()
+
+        self.logger.debug(f"Created transaction request: {txn_request}")
+        resp = self._post_request(POST, SUBMIT_TRANSACTION, txn_request)
+        return ClientRelayerTransactionResponse(
+            resp.get("transactionID"),
+            resp.get("transactionHash"),
+            self,
+        )
+
+    def _execute_proxy_transactions(
+        self, transactions: list[ProxyTransaction], metadata: str = None
+    ):
+        if not is_proxy_config_valid(self.contract_config):
+            raise RelayerClientException(
+                "Proxy contracts are not configured for this chain"
+            )
+
+        from_address = self.signer.address()
+
+        relay_payload = self.get_relay_payload(from_address, TransactionType.PROXY.value)
+        if relay_payload is None or relay_payload.get("nonce") is None:
+            raise RelayerClientException("invalid relay payload received")
+
+        encoded_data = encode_proxy_transaction_data(transactions)
+
+        gas_limit = self._estimate_proxy_gas(
+            from_address, self.contract_config.proxy_factory, encoded_data
+        )
+
+        proxy_args = ProxyTransactionArgs(
+            from_address=from_address,
+            nonce=relay_payload.get("nonce"),
+            gas_price="0",
+            data=encoded_data,
+            relay=relay_payload.get("address"),
+            gas_limit=gas_limit,
+        )
+
+        txn_request = build_proxy_transaction_request(
+            signer=self.signer,
+            args=proxy_args,
             config=self.contract_config,
             metadata=metadata,
         ).to_dict()
@@ -204,6 +311,19 @@ class RelayClient:
         )
         return None
 
+    def _estimate_proxy_gas(self, from_address: str, to: str, data: str) -> str:
+        if self.rpc_url is None:
+            return str(DEFAULT_GAS_LIMIT)
+
+        try:
+            gas = estimate_gas(self.rpc_url, from_address, to, data)
+            return str(gas)
+        except (ValueError, requests.RequestException) as e:
+            self.logger.debug(
+                f"Gas estimation failed, using default: {e}"
+            )
+            return str(DEFAULT_GAS_LIMIT)
+
     def _post_request(self, method: str, request_path: str, body: dict = None):
         builder_headers = self._generate_builder_headers(method, request_path, body)
         if builder_headers is None:
@@ -229,6 +349,14 @@ class RelayClient:
         self.assert_signer_needed()
         addr = self.signer.address()
         return derive(addr, self.contract_config.safe_factory)
+
+    def get_expected_proxy_wallet(self):
+        """
+        Returns the expected proxy wallet for the signer
+        """
+        self.assert_signer_needed()
+        addr = self.signer.address()
+        return derive_proxy_wallet(addr, self.contract_config.proxy_factory)
 
     def assert_signer_needed(self):
         if self.signer is None:
