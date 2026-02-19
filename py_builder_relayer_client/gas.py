@@ -1,6 +1,8 @@
 import requests
 
-DEFAULT_GAS_LIMIT = 10_000_000
+# Fallback used when RPC estimation fails. Must fit within the relay hub's gas budget
+# (~650k total). Sized to cover most proxy calls while leaving room for relay overhead.
+DEFAULT_GAS_LIMIT = 500_000
 
 
 def estimate_gas(rpc_url: str, from_address: str, to: str, data: str) -> int:
