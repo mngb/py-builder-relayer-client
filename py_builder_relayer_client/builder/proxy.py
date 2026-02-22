@@ -2,6 +2,7 @@ from eth_utils import keccak, to_bytes
 from hexbytes import HexBytes
 
 from ..config import ContractConfig
+from ..gas import DEFAULT_GAS_LIMIT
 from ..models import (
     ProxyTransactionArgs,
     TransactionRequest,
@@ -79,7 +80,7 @@ def build_proxy_transaction_request(
     """
     proxy_wallet = derive_proxy_wallet(args.from_address, config.proxy_factory)
 
-    gas_limit = "10000000"
+    gas_limit = str(DEFAULT_GAS_LIMIT)
     if args.gas_limit is not None and args.gas_limit != "0":
         gas_limit = args.gas_limit
 

@@ -202,7 +202,7 @@ class RelayClient:
         from_address = self.signer.address()
 
         relay_payload = self.get_relay_payload(from_address, TransactionType.PROXY.value)
-        if relay_payload is None or relay_payload.get("nonce") is None:
+        if relay_payload is None or relay_payload.get("nonce") is None or relay_payload.get("address") is None:
             raise RelayerClientException("invalid relay payload received")
 
         encoded_data = encode_proxy_transaction_data(transactions)
@@ -355,6 +355,10 @@ class RelayClient:
         Returns the expected proxy wallet for the signer
         """
         self.assert_signer_needed()
+        if not is_proxy_config_valid(self.contract_config):
+            raise RelayerClientException(
+                "Proxy contracts are not configured for this chain"
+            )
         addr = self.signer.address()
         return derive_proxy_wallet(addr, self.contract_config.proxy_factory)
 
