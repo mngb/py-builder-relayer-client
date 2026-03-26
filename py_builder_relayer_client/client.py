@@ -98,7 +98,7 @@ class RelayClient:
 
         self.builder_config = None
         self.logger = logging.getLogger(self.__class__.__name__)
-        seff.relay_api_key_address = relay_api_key_address
+        self.relay_api_key_address = relay_api_key_address
         self.relay_api_key = relay_api_key
 
         self.relay_tx_type = (
@@ -364,8 +364,8 @@ class RelayClient:
         if not self.builder_config is None:
             builder_headers = self._generate_builder_headers(method, request_path, body)
         else:
-            builder_herders = {
-                "RELAYER_API_KEY": self.relayer_api_key,
+            builder_headers = {
+                "RELAYER_API_KEY": self.relay_api_key,
                 "RELAYER_API_KEY_ADDRESS": self.relay_api_key_address,
             }
 
