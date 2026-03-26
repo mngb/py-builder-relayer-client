@@ -71,7 +71,39 @@ class RelayClient:
             self.builder_config = builder_config
         self.logger = logging.getLogger(self.__class__.__name__)
 
-        self.relay_tx_type = relay_tx_type if relay_tx_type is not None else RelayerTxType.SAFE
+        self.relay_tx_type = (
+            relay_tx_type if relay_tx_type is not None else RelayerTxType.SAFE
+        )
+
+    def __init__(
+        self,
+        relayer_url,
+        chain_id: int,
+        private_key: str = None,
+        relay_api_key: str = None,
+        relay_api_key_address: str = None,
+        relay_tx_type=None,
+        rpc_url: str = None,
+    ):
+        self.relayer_url = (
+            relayer_url[0:-1] if relayer_url.endswith("/") else relayer_url
+        )
+        self.chain_id = chain_id
+        self.contract_config = get_contract_config(chain_id)
+        self.rpc_url = rpc_url
+
+        self.signer = None
+        if private_key is not None:
+            self.signer = Signer(private_key, chain_id)
+
+        self.builder_config = None
+        self.logger = logging.getLogger(self.__class__.__name__)
+        seff.relay_api_key_address = relay_api_key_address
+        self.relay_api_key = relay_api_key
+
+        self.relay_tx_type = (
+            relay_tx_type if relay_tx_type is not None else RelayerTxType.SAFE
+        )
 
     def get_nonce(self, signer_address: str, signer_type: str):
         """
@@ -113,8 +145,8 @@ class RelayClient:
         return False
 
     def execute(self, transactions: list[Transaction], metadata: str = None):
-        self.assert_signer_needed()
-        self.assert_builder_creds_needed()
+        # self.assert_signer_needed()
+        # self.assert_builder_creds_needed()
         if len(transactions) == 0:
             raise RelayerClientException("no transactions to execute")
 
@@ -201,8 +233,14 @@ class RelayClient:
 
         from_address = self.signer.address()
 
-        relay_payload = self.get_relay_payload(from_address, TransactionType.PROXY.value)
-        if relay_payload is None or relay_payload.get("nonce") is None or relay_payload.get("address") is None:
+        relay_payload = self.get_relay_payload(
+            from_address, TransactionType.PROXY.value
+        )
+        if (
+            relay_payload is None
+            or relay_payload.get("nonce") is None
+            or relay_payload.get("address") is None
+        ):
             raise RelayerClientException("invalid relay payload received")
 
         encoded_data = encode_proxy_transaction_data(transactions)
@@ -319,13 +357,18 @@ class RelayClient:
             gas = estimate_gas(self.rpc_url, from_address, to, data)
             return str(gas)
         except (ValueError, requests.RequestException) as e:
-            self.logger.debug(
-                f"Gas estimation failed, using default: {e}"
-            )
+            self.logger.debug(f"Gas estimation failed, using default: {e}")
             return str(DEFAULT_GAS_LIMIT)
 
     def _post_request(self, method: str, request_path: str, body: dict = None):
-        builder_headers = self._generate_builder_headers(method, request_path, body)
+        if not self.builder_config is None:
+            builder_headers = self._generate_builder_headers(method, request_path, body)
+        else:
+            builder_herders = {
+                "RELAYER_API_KEY": self.relayer_api_key,
+                "RELAYER_API_KEY_ADDRESS": self.relay_api_key_address,
+            }
+
         if builder_headers is None:
             raise RelayerClientException("could not generate builder headers")
         return post(
